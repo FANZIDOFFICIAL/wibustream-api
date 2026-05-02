@@ -1,31 +1,29 @@
-const express = require('express');
-const axios = require('axios');
-const cors = require('cors');
-const NodeCache = require('node-cache');
+import express from 'express';
+import cors from 'cors';
+import NodeCache from 'node-cache';
+import { ANIME } from '@consumet/extensions';
 
 const app = express();
 const cache = new NodeCache({ stdTTL: 1800 });
 const PORT = process.env.PORT || 3000;
+const gogoanime = new ANIME.Gogoanime();
 
 app.use(cors());
 app.use(express.json());
-
-const CONSUMET = 'https://consumet-api.onrender.com';
-const JIKAN = 'https://api.jikan.moe/v4';
 
 async function malToGogoSlug(malId) {
     const ck = 'slug:' + malId;
     if (cache.has(ck)) return cache.get(ck);
     try {
-        const info = await axios.get(`${JIKAN}/anime/${malId}`, { timeout: 10000 });
-        const title = info.data?.data?.title_english || info.data?.data?.title || '';
+        const res = await fetch(`https://api.jikan.moe/v4/anime/${malId}`);
+        const data = await res.json();
+        const title = data?.data?.title_english || data?.data?.title || '';
         if (!title) return null;
 
-        const search = await axios.get(`${CONSUMET}/anime/gogoanime/${encodeURIComponent(title)}`, { timeout: 10000 });
-        const results = search.data?.results || [];
-        if (!results.length) return null;
+        const results = await gogoanime.search(title);
+        if (!results?.results?.length) return null;
 
-        const match = results.find(r => !r.id.includes('-dub')) || results[0];
+        const match = results.results.find(r => !r.id.includes('-dub')) || results.results[0];
         cache.set(ck, match.id, 86400);
         return match.id;
     } catch (e) {
@@ -46,15 +44,15 @@ async function getWatchSources(epId) {
 
     try {
         const slug = await malToGogoSlug(malId);
-        if (!slug) throw new Error('Anime tidak ditemukan di GogoAnime');
+        if (!slug) throw new Error('Anime tidak ditemukan');
 
-        const epListRes = await axios.get(`${CONSUMET}/anime/gogoanime/info/${encodeURIComponent(slug)}`, { timeout: 15000 });
-        const episodes = epListRes.data?.episodes || [];
+        const info = await gogoanime.fetchAnimeInfo(slug);
+        const episodes = info?.episodes || [];
         const ep = episodes.find(e => e.number === epNum) || episodes[epNum - 1];
         if (!ep) throw new Error('Episode tidak ditemukan');
 
-        const streamRes = await axios.get(`${CONSUMET}/anime/gogoanime/watch/${encodeURIComponent(ep.id)}`, { timeout: 15000 });
-        const sources = (streamRes.data?.sources || []).map(s => ({
+        const stream = await gogoanime.fetchEpisodeSources(ep.id);
+        const sources = (stream?.sources || []).map(s => ({
             url: s.url,
             label: s.quality || 'Auto',
             isM3U8: s.isM3U8 ?? s.url.includes('.m3u8')
@@ -63,7 +61,6 @@ async function getWatchSources(epId) {
         const result = { sources };
         if (sources.length) cache.set(ck, result);
         return result;
-
     } catch (e) {
         return { sources: [], error: e.message };
     }
