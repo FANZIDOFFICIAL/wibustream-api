@@ -12,10 +12,10 @@
 
 Buka `inc/config.php`, isi:
 ```php
-define('WIBU_API_URL', 'https://wibustream-api.up.railway.app');
+define('WIBU_API_URL', 'https://wibustream-api-production.up.railway.app');
 ```
 
 ## Test API
 
-- Health check: `https://your-url.railway.app/health`
-- Watch test: `https://your-url.railway.app/watch?id=mal-51553-1|jikan`
+- Health check: `https://wibustream-api-production.up.railway.app/health`
+- Watch test: `https://wibustream-api-production.up.railway.app/watch?id=mal-51553-1|jikan`

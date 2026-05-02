@@ -85,19 +85,10 @@ async function getWatchSources(epId) {
         const malId = m?.[1] ?? '';
         const epNum = m?.[2] ?? '1';
 
-        // Konversi MAL → AniList
-        let anilistId = malId;
-        try {
-            const gql = await axios.post('https://graphql.anilist.co', {
-                query: `query{Media(idMal:${malId},type:ANIME){id}}`
-            }, { headers: { 'Content-Type': 'application/json' } });
-            anilistId = gql.data?.data?.Media?.id ?? malId;
-        } catch (e) {}
-
         return {
             sources: [
-                { url: `https://player.vidplus.to/embed/anime/${anilistId}/${epNum}`, label: 'VidPlus' },
-                { url: `https://www.miruro.tv/watch?id=${anilistId}&ep=${epNum}`, label: 'Miruro' },
+                { url: `https://megaplay.buzz/stream/mal/${malId}/${epNum}/sub`, label: 'MegaPlay SUB' },
+                { url: `https://megaplay.buzz/stream/mal/${malId}/${epNum}/dub`, label: 'MegaPlay DUB' },
             ],
             notice: 'Menampilkan server alternatif.'
         };
