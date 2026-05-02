@@ -1,15 +1,22 @@
-import express from 'express';
-import cors from 'cors';
-import NodeCache from 'node-cache';
-import { ANIME } from '@consumet/extensions';
+const express = require('express');
+const cors = require('cors');
+const NodeCache = require('node-cache');
 
 const app = express();
 const cache = new NodeCache({ stdTTL: 1800 });
 const PORT = process.env.PORT || 3000;
-const gogoanime = new ANIME.Gogoanime();
 
 app.use(cors());
 app.use(express.json());
+
+let gogoanime = null;
+async function getGogo() {
+    if (!gogoanime) {
+        const mod = await import('@consumet/extensions');
+        gogoanime = new mod.ANIME.Gogoanime();
+    }
+    return gogoanime;
+}
 
 async function malToGogoSlug(malId) {
     const ck = 'slug:' + malId;
@@ -20,7 +27,8 @@ async function malToGogoSlug(malId) {
         const title = data?.data?.title_english || data?.data?.title || '';
         if (!title) return null;
 
-        const results = await gogoanime.search(title);
+        const gogo = await getGogo();
+        const results = await gogo.search(title);
         if (!results?.results?.length) return null;
 
         const match = results.results.find(r => !r.id.includes('-dub')) || results.results[0];
@@ -36,22 +44,22 @@ async function getWatchSources(epId) {
     const m = realId.match(/mal-(\d+)-(\d+)/);
     const malId = m?.[1] ?? '';
     const epNum = parseInt(m?.[2] ?? '1');
-
     if (!malId) return { sources: [], error: 'ID tidak valid' };
 
     const ck = 'watch:' + malId + ':' + epNum;
     if (cache.has(ck)) return cache.get(ck);
 
     try {
+        const gogo = await getGogo();
         const slug = await malToGogoSlug(malId);
         if (!slug) throw new Error('Anime tidak ditemukan');
 
-        const info = await gogoanime.fetchAnimeInfo(slug);
+        const info = await gogo.fetchAnimeInfo(slug);
         const episodes = info?.episodes || [];
         const ep = episodes.find(e => e.number === epNum) || episodes[epNum - 1];
         if (!ep) throw new Error('Episode tidak ditemukan');
 
-        const stream = await gogoanime.fetchEpisodeSources(ep.id);
+        const stream = await gogo.fetchEpisodeSources(ep.id);
         const sources = (stream?.sources || []).map(s => ({
             url: s.url,
             label: s.quality || 'Auto',
