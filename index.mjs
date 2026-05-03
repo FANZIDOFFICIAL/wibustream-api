@@ -9,65 +9,48 @@ const PORT = process.env.PORT || 3000;
 
 app.use(cors());
 
+const BASE = 'https://hianime.to';
+
 let browser = null;
 async function getBrowser() {
     if (!browser || !browser.connected) {
         browser = await puppeteer.launch({
             headless: 'new',
-            args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-gpu',
-                '--no-first-run',
-                '--no-zygote',
-                '--single-process',
-            ]
+            args: ['--no-sandbox','--disable-setuid-sandbox','--disable-dev-shm-usage','--disable-gpu','--no-zygote','--single-process']
         });
     }
     return browser;
 }
 
-async function fetchPage(url) {
+async function fetchWithPage(url, isJson = false) {
     const b = await getBrowser();
     const page = await b.newPage();
     try {
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36');
-        await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
-        await page.waitForSelector('body', { timeout: 10000 });
-        return await page.content();
-    } finally {
-        await page.close();
-    }
-}
-
-async function fetchJson(url) {
-    const b = await getBrowser();
-    const page = await b.newPage();
-    try {
-        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36');
-        const res = await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+        await page.setExtraHTTPHeaders({ 'X-Requested-With': 'XMLHttpRequest', 'Accept': isJson ? 'application/json' : 'text/html' });
+        
+        // Visit homepage first to get cookies
+        await page.goto(BASE, { waitUntil: 'domcontentloaded', timeout: 20000 });
+        
+        // Now fetch target
+        const res = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
         const text = await res.text();
-        return JSON.parse(text);
+        return isJson ? JSON.parse(text) : text;
     } finally {
         await page.close();
     }
 }
-
-const BASE = 'https://hianime.to';
 
 async function malToHianimeId(malId) {
     const ck = 'hianime:' + malId;
     if (cache.has(ck)) return cache.get(ck);
 
-    // Jikan → judul
     const jikan = await fetch(`https://api.jikan.moe/v4/anime/${malId}`);
     const jData = await jikan.json();
     const title = jData?.data?.title_english || jData?.data?.title || '';
     if (!title) return null;
 
-    // Search HiAnime
-    const html = await fetchPage(`${BASE}/search?keyword=${encodeURIComponent(title)}`);
+    const html = await fetchWithPage(`${BASE}/search?keyword=${encodeURIComponent(title)}`);
     const match = html.match(/href="\/([a-z0-9-]+-\d+)"/);
     if (!match) return null;
 
@@ -79,12 +62,10 @@ async function getEpisodes(animeId) {
     const ck = 'eps:' + animeId;
     if (cache.has(ck)) return cache.get(ck);
 
-    const html = await fetchPage(`${BASE}/${animeId}`);
-    const idMatch = animeId.match(/(\d+)$/);
-    const numericId = idMatch?.[1];
+    const numericId = animeId.match(/(\d+)$/)?.[1];
     if (!numericId) return [];
 
-    const data = await fetchJson(`${BASE}/ajax/v2/episode/list/${numericId}`);
+    const data = await fetchWithPage(`${BASE}/ajax/v2/episode/list/${numericId}`, true);
     const epHtml = data?.html || '';
     const eps = [];
     const regex = /data-id="(\d+)"[^>]*data-number="(\d+)"/g;
@@ -98,12 +79,12 @@ async function getEpisodes(animeId) {
 }
 
 async function getStreamUrl(epId) {
-    const data = await fetchJson(`${BASE}/ajax/v2/episode/servers?episodeId=${epId}`);
+    const data = await fetchWithPage(`${BASE}/ajax/v2/episode/servers?episodeId=${epId}`, true);
     const serverHtml = data?.html || '';
     const serverMatch = serverHtml.match(/data-id="(\d+)"/);
     if (!serverMatch) return null;
 
-    const srcData = await fetchJson(`${BASE}/ajax/v2/episode/sources?id=${serverMatch[1]}`);
+    const srcData = await fetchWithPage(`${BASE}/ajax/v2/episode/sources?id=${serverMatch[1]}`, true);
     return srcData?.link || null;
 }
 
@@ -122,8 +103,10 @@ async function getWatchSources(epId) {
         if (!animeId) throw new Error('Anime tidak ditemukan di HiAnime');
 
         const episodes = await getEpisodes(animeId);
+        if (!episodes.length) throw new Error('Episode list kosong');
+
         const ep = episodes.find(e => e.number === epNum);
-        if (!ep) throw new Error(`Episode ${epNum} tidak ditemukan`);
+        if (!ep) throw new Error(`Episode ${epNum} tidak ditemukan dari ${episodes.length} ep`);
 
         const streamUrl = await getStreamUrl(ep.id);
         if (!streamUrl) throw new Error('Stream URL tidak ditemukan');
@@ -144,6 +127,5 @@ app.get('/watch', async (req, res) => {
     res.json(await getWatchSources(id));
 });
 
-// Init browser on startup
 getBrowser().then(() => console.log('Browser ready'));
 app.listen(PORT, () => console.log(`WibuStream API on port ${PORT}`));
