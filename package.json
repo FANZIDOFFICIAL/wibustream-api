@@ -10,6 +10,7 @@
     "puppeteer": "^22.0.0",
     "puppeteer-extra": "^3.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "cheerio": "^1.0.0",
     "cors": "^2.8.5",
     "node-cache": "^5.1.2"
   }
