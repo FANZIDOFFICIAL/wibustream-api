@@ -126,6 +126,21 @@ async function getWatchSources(epId) {
     }
 }
 
+app.get('/debug-search', async (req, res) => {
+    const q = req.query.q || 'naruto';
+    try {
+        const html = await fetchHtml(`${BASE}/?s=${encodeURIComponent(q)}`);
+        const $ = cheerio.load(html);
+        const links = [];
+        $('a[href*="kuronime"]').each((_, el) => {
+            links.push({ href: $(el).attr('href'), text: $(el).text().trim().substring(0, 50) });
+        });
+        res.json({ total: links.length, links: links.slice(0, 10) });
+    } catch(e) {
+        res.json({ error: e.message });
+    }
+});
+
 app.get('/health', (_, res) => res.json({ ok: true }));
 
 app.get('/watch', async (req, res) => {
