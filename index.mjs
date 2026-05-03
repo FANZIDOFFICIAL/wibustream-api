@@ -168,49 +168,56 @@ async function getEpisodeUrl(animeUrl, epNum) {
 }
 
 async function getEmbed(epUrl) {
-    const html = await fetchHtml(epUrl);
-    const $ = cheerio.load(html);
-
-    // Domain yang BUKAN video player — harus difilter
-    const blacklist = ['cbox.ws', 'facebook.com', 'disqus.com', 'google.com', 'twitter.com', 'addthis.com'];
+    const blacklist = ['cbox.ws', 'facebook.com', 'disqus.com', 'google.com',
+                       'twitter.com', 'addthis.com', 'mc.yandex', 'googletagmanager'];
 
     function isVideoIframe(src) {
-        if (!src) return false;
+        if (!src || src.startsWith('about:') || src.startsWith('javascript:')) return false;
         return !blacklist.some(b => src.includes(b));
     }
 
-    // Cari iframe video dari selector spesifik dulu
-    const playerSelectors = [
-        '.player-embed iframe',
-        '#player iframe',
-        '.video-player iframe',
-        '.post-content iframe',
-        '.entry-content iframe',
-        '#playerframe',
-        'iframe[src*="drive.google"]',
-        'iframe[src*="doodstream"]',
-        'iframe[src*="streamlare"]',
-        'iframe[src*="streamtape"]',
-        'iframe[src*="filemoon"]',
-        'iframe[src*="mp4upload"]',
-        'iframe[src*="yourupload"]',
-        'iframe[src*="okru"]',
-        'iframe[src*="ok.ru"]',
-    ];
+    const b = await getBrowser();
+    const page = await b.newPage();
+    try {
+        await page.setViewport({ width: 1280, height: 800 });
 
-    for (const sel of playerSelectors) {
-        const src = $(sel).first().attr('src');
-        if (isVideoIframe(src)) return src;
+        // Intercept requests — catat semua iframe src yang dimuat
+        const iframeSrcs = [];
+        page.on('framenavigated', frame => {
+            const url = frame.url();
+            if (url && url !== epUrl && isVideoIframe(url)) {
+                iframeSrcs.push(url);
+            }
+        });
+
+        await page.goto(epUrl, { waitUntil: 'networkidle2', timeout: 30000 });
+
+        // Tunggu iframe video muncul (max 8 detik)
+        await page.waitForSelector('iframe[src]', { timeout: 8000 }).catch(() => {});
+
+        // Cek iframe yang sudah terekam dari framenavigated
+        if (iframeSrcs.length > 0) return iframeSrcs[0];
+
+        // Evaluate langsung di browser — bisa dapat iframe yang di-inject JS
+        const found = await page.evaluate((bl) => {
+            const iframes = Array.from(document.querySelectorAll('iframe[src]'));
+            for (const f of iframes) {
+                const src = f.src || f.getAttribute('src') || '';
+                if (src && !bl.some(b => src.includes(b))) return src;
+            }
+            // Coba cari di dalam shadow DOM atau nested
+            const allEls = document.querySelectorAll('*');
+            for (const el of allEls) {
+                const src = el.getAttribute('src') || el.getAttribute('data-src') || '';
+                if (el.tagName === 'IFRAME' && src && !bl.some(b => src.includes(b))) return src;
+            }
+            return null;
+        }, blacklist);
+
+        return found;
+    } finally {
+        await page.close();
     }
-
-    // Fallback: cari semua iframe, skip yang blacklist
-    let found = null;
-    $('iframe[src]').each((_, el) => {
-        const src = $(el).attr('src') || '';
-        if (isVideoIframe(src) && !found) found = src;
-    });
-
-    return found;
 }
 
 async function malToKuronime(malId) {
