@@ -152,7 +152,8 @@ async function malToKuronime(malId) {
         const directUrl = `${BASE}/anime/${slug}/`;
         try {
             const html = await fetchHtml(directUrl);
-            if (html.includes('eplister') || html.includes('episodelist')) {
+            // Check it's not a 404/redirect by looking for anime-specific content
+            if (!html.includes('Page Not Found') && !html.includes('404') && html.includes('episode')) {
                 cache.set(ck, directUrl, 86400);
                 return directUrl;
             }
@@ -243,6 +244,8 @@ app.get('/debug-ep', async (req, res) => {
         res.json({ error: e.message });
     }
 });
+
+app.get('/clear-cache', (_, res) => { cache.flushAll(); res.json({ ok: true }); });
 
 app.get('/health', (_, res) => res.json({ ok: true }));
 
