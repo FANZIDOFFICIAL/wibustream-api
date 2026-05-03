@@ -135,7 +135,12 @@ app.get('/debug-search', async (req, res) => {
         $('a[href*="kuronime"]').each((_, el) => {
             links.push({ href: $(el).attr('href'), text: $(el).text().trim().substring(0, 50) });
         });
-        res.json({ total: links.length, links: links.slice(0, 10) });
+        // Find anime result containers
+        const containers = [];
+        $('article, .bs, .bsx, .searchlist, .result').each((_, el) => {
+            containers.push($(el).attr('class') || $(el).prop('tagName'));
+        });
+        res.json({ total: links.length, links: links.slice(0, 10), containers: [...new Set(containers)].slice(0, 20), snippet: html.substring(3000, 4500) });
     } catch(e) {
         res.json({ error: e.message });
     }
