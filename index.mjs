@@ -45,6 +45,8 @@ async function jikanFetch(malId) {
         throw new Error('Jikan error: ' + text.substring(0, 100));
     }
 }
+
+async function fetchHtml(url) {
     const b = await getBrowser();
     const page = await b.newPage();
     try {
