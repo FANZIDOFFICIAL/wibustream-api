@@ -25,7 +25,26 @@ async function getBrowser() {
     return browser;
 }
 
-async function fetchHtml(url) {
+async function jikanFetch(malId) {
+    const ck = 'jikan:' + malId;
+    if (cache.has(ck)) return cache.get(ck);
+    const res = await fetch(`https://api.jikan.moe/v4/anime/${malId}`, {
+        headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36',
+            'Accept': 'application/json',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Referer': 'https://myanimelist.net/',
+        }
+    });
+    const text = await res.text();
+    try {
+        const data = JSON.parse(text);
+        if (data?.data) cache.set(ck, data, 86400);
+        return data;
+    } catch(e) {
+        throw new Error('Jikan error: ' + text.substring(0, 100));
+    }
+}
     const b = await getBrowser();
     const page = await b.newPage();
     try {
@@ -106,10 +125,7 @@ async function malToKuronime(malId) {
     const ck = 'kuro:' + malId;
     if (cache.has(ck)) return cache.get(ck);
 
-    const jikan = await fetch(`https://api.jikan.moe/v4/anime/${malId}`);
-    const text = await jikan.text();
-    let jData;
-    try { jData = JSON.parse(text); } catch(e) { throw new Error('Jikan API error: ' + text.substring(0, 100)); }
+    const jData = await jikanFetch(malId);
     const title = jData?.data?.title || '';
     if (!title) return null;
 
@@ -172,10 +188,7 @@ app.get('/debug-ep', async (req, res) => {
     const malId = req.query.mal || '20';
     const epNum = parseInt(req.query.ep || '1');
     try {
-        const jikan = await fetch(`https://api.jikan.moe/v4/anime/${malId}`);
-        const text = await jikan.text();
-        let jData;
-        try { jData = JSON.parse(text); } catch(e) { return res.json({ error: 'Jikan error: ' + text.substring(0, 200) }); }
+        const jData = await jikanFetch(malId);
         const title = jData?.data?.title || '';
         const results = await searchKuronime(title);
         const animeUrl = results[0]?.href || null;
