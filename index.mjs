@@ -1,41 +1,59 @@
 import express from 'express';
 import cors from 'cors';
 import NodeCache from 'node-cache';
-import puppeteer from 'puppeteer';
+import puppeteer from 'puppeteer-extra';
+import StealthPlugin from 'puppeteer-extra-plugin-stealth';
+
+puppeteer.use(StealthPlugin());
 
 const app = express();
 const cache = new NodeCache({ stdTTL: 1800 });
 const PORT = process.env.PORT || 3000;
+const BASE = 'https://hianime.to';
 
 app.use(cors());
-
-const BASE = 'https://hianime.to';
 
 let browser = null;
 async function getBrowser() {
     if (!browser || !browser.connected) {
         browser = await puppeteer.launch({
-            headless: 'new',
+            headless: true,
             args: ['--no-sandbox','--disable-setuid-sandbox','--disable-dev-shm-usage','--disable-gpu','--no-zygote','--single-process']
         });
     }
     return browser;
 }
 
-async function fetchWithPage(url, isJson = false) {
+async function newPage() {
     const b = await getBrowser();
     const page = await b.newPage();
+    await page.setViewport({ width: 1280, height: 800 });
+    return page;
+}
+
+async function fetchHtml(url) {
+    const page = await newPage();
     try {
-        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36');
-        await page.setExtraHTTPHeaders({ 'X-Requested-With': 'XMLHttpRequest', 'Accept': isJson ? 'application/json' : 'text/html' });
-        
-        // Visit homepage first to get cookies
+        await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+        return await page.content();
+    } finally {
+        await page.close();
+    }
+}
+
+async function fetchAjax(url) {
+    const page = await newPage();
+    try {
+        // Load homepage first for cookies
         await page.goto(BASE, { waitUntil: 'domcontentloaded', timeout: 20000 });
-        
-        // Now fetch target
-        const res = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
-        const text = await res.text();
-        return isJson ? JSON.parse(text) : text;
+        // Fetch AJAX via evaluate
+        const result = await page.evaluate(async (ajaxUrl) => {
+            const res = await fetch(ajaxUrl, {
+                headers: { 'X-Requested-With': 'XMLHttpRequest' }
+            });
+            return res.text();
+        }, url);
+        return JSON.parse(result);
     } finally {
         await page.close();
     }
@@ -50,7 +68,7 @@ async function malToHianimeId(malId) {
     const title = jData?.data?.title_english || jData?.data?.title || '';
     if (!title) return null;
 
-    const html = await fetchWithPage(`${BASE}/search?keyword=${encodeURIComponent(title)}`);
+    const html = await fetchHtml(`${BASE}/search?keyword=${encodeURIComponent(title)}`);
     const match = html.match(/href="\/([a-z0-9-]+-\d+)"/);
     if (!match) return null;
 
@@ -65,7 +83,7 @@ async function getEpisodes(animeId) {
     const numericId = animeId.match(/(\d+)$/)?.[1];
     if (!numericId) return [];
 
-    const data = await fetchWithPage(`${BASE}/ajax/v2/episode/list/${numericId}`, true);
+    const data = await fetchAjax(`${BASE}/ajax/v2/episode/list/${numericId}`);
     const epHtml = data?.html || '';
     const eps = [];
     const regex = /data-id="(\d+)"[^>]*data-number="(\d+)"/g;
@@ -79,12 +97,12 @@ async function getEpisodes(animeId) {
 }
 
 async function getStreamUrl(epId) {
-    const data = await fetchWithPage(`${BASE}/ajax/v2/episode/servers?episodeId=${epId}`, true);
+    const data = await fetchAjax(`${BASE}/ajax/v2/episode/servers?episodeId=${epId}`);
     const serverHtml = data?.html || '';
     const serverMatch = serverHtml.match(/data-id="(\d+)"/);
     if (!serverMatch) return null;
 
-    const srcData = await fetchWithPage(`${BASE}/ajax/v2/episode/sources?id=${serverMatch[1]}`, true);
+    const srcData = await fetchAjax(`${BASE}/ajax/v2/episode/sources?id=${serverMatch[1]}`);
     return srcData?.link || null;
 }
 
@@ -106,7 +124,7 @@ async function getWatchSources(epId) {
         if (!episodes.length) throw new Error('Episode list kosong');
 
         const ep = episodes.find(e => e.number === epNum);
-        if (!ep) throw new Error(`Episode ${epNum} tidak ditemukan dari ${episodes.length} ep`);
+        if (!ep) throw new Error(`Episode ${epNum} tidak ditemukan`);
 
         const streamUrl = await getStreamUrl(ep.id);
         if (!streamUrl) throw new Error('Stream URL tidak ditemukan');
