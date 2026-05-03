@@ -24,8 +24,8 @@ async function jikanGet(path) {
 async function gogoSearch(title) {
     const ck = 'gogo:' + title;
     if (cache.has(ck)) return cache.get(ck);
-    const url = `https://gogoanime3.co/search.html?keyword=${encodeURIComponent(title)}`;
-    const res = await fetch(url, { headers: { ...HEADERS, Referer: 'https://gogoanime3.co/' } });
+    const url = `https://gogoanimes.cv/search.html?keyword=${encodeURIComponent(title)}`;
+    const res = await fetch(url, { headers: { ...HEADERS, Referer: 'https://gogoanimes.cv/' } });
     const html = await res.text();
     const $ = cheerio.load(html);
     const results = [];
@@ -42,7 +42,7 @@ async function gogoSearch(title) {
 async function gogoEpisodes(animeId) {
     const ck = 'eplist:' + animeId;
     if (cache.has(ck)) return cache.get(ck);
-    const res = await fetch(`https://gogoanime3.co/category/${animeId}`, { headers: { ...HEADERS, Referer: 'https://gogoanime3.co/' } });
+    const res = await fetch(`https://gogoanimes.cv/category/${animeId}`, { headers: { ...HEADERS, Referer: 'https://gogoanimes.cv/' } });
     const html = await res.text();
     const $ = cheerio.load(html);
     const movieId = $('#movie_id').attr('value') || $('input#movie_id').val();
@@ -50,8 +50,8 @@ async function gogoEpisodes(animeId) {
     const epEnd = $('#episode_page a').last().attr('ep_end') || '0';
     if (!movieId) return [];
 
-    const listRes = await fetch(`https://ajax.gogo-load.com/ajax/load-list-episode?ep_start=${epStart}&ep_end=${epEnd}&id=${movieId}`, {
-        headers: { ...HEADERS, Referer: 'https://gogoanime3.co/' }
+    const listRes = await fetch(`https://ajax.gogocdn.net/ajax/load-list-episode?ep_start=${epStart}&ep_end=${epEnd}&id=${movieId}`, {
+        headers: { ...HEADERS, Referer: 'https://gogoanimes.cv/' }
     });
     const listHtml = await listRes.text();
     const $2 = cheerio.load(listHtml);
@@ -67,7 +67,7 @@ async function gogoEpisodes(animeId) {
 }
 
 async function gogoStream(epId) {
-    const res = await fetch(`https://gogoanime3.co/${epId}`, { headers: { ...HEADERS, Referer: 'https://gogoanime3.co/' } });
+    const res = await fetch(`https://gogoanimes.cv/${epId}`, { headers: { ...HEADERS, Referer: 'https://gogoanimes.cv/' } });
     const html = await res.text();
     const $ = cheerio.load(html);
     const embedUrl = $('.play-video iframe').attr('src') || $('iframe').attr('src') || '';
