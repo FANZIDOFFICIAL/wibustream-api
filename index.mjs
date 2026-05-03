@@ -41,14 +41,26 @@ async function searchKuronime(title) {
     const ck = 'search:' + title;
     if (cache.has(ck)) return cache.get(ck);
 
-    const html = await fetchHtml(`${BASE}/?s=${encodeURIComponent(title)}`);
-    const $ = cheerio.load(html);
+    const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+    const b = await getBrowser();
+    const page = await b.newPage();
     const results = [];
-    $('.bs .bsx a').each((_, el) => {
-        const href = $(el).attr('href') || '';
-        const name = $(el).attr('title') || $(el).text().trim();
-        if (href) results.push({ href, name });
-    });
+    try {
+        await page.setViewport({ width: 1280, height: 800 });
+        await page.goto(`${BASE}/search/${encodeURIComponent(slug)}/`, { waitUntil: 'networkidle2', timeout: 30000 });
+        await page.waitForSelector('.bsx', { timeout: 5000 }).catch(() => {});
+        const html = await page.content();
+        const $ = cheerio.load(html);
+        $('.bsx a').each((_, el) => {
+            const href = $(el).attr('href') || '';
+            const name = $(el).attr('title') || $(el).text().trim();
+            if (href.includes('kuronime.sbs') && !href.includes('/genres/') && !href.includes('/season/')) {
+                results.push({ href, name });
+            }
+        });
+    } finally {
+        await page.close();
+    }
 
     if (results.length) cache.set(ck, results, 86400);
     return results;
@@ -58,16 +70,24 @@ async function getEpisodeUrl(animeUrl, epNum) {
     const ck = 'epurl:' + animeUrl + ':' + epNum;
     if (cache.has(ck)) return cache.get(ck);
 
-    const html = await fetchHtml(animeUrl);
-    const $ = cheerio.load(html);
+    const b = await getBrowser();
+    const page = await b.newPage();
     let epUrl = null;
-
-    $('.eplister li').each((_, el) => {
-        const num = parseInt($(el).find('.epl-num').text().trim());
-        if (num === epNum) {
-            epUrl = $(el).find('a').attr('href') || null;
-        }
-    });
+    try {
+        await page.setViewport({ width: 1280, height: 800 });
+        await page.goto(animeUrl, { waitUntil: 'networkidle2', timeout: 30000 });
+        await page.waitForSelector('.eplister', { timeout: 5000 }).catch(() => {});
+        const html = await page.content();
+        const $ = cheerio.load(html);
+        $('.eplister li').each((_, el) => {
+            const num = parseInt($(el).find('.epl-num').text().trim());
+            if (num === epNum) {
+                epUrl = $(el).find('a').attr('href') || null;
+            }
+        });
+    } finally {
+        await page.close();
+    }
 
     if (epUrl) cache.set(ck, epUrl, 3600);
     return epUrl;
