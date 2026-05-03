@@ -201,29 +201,56 @@ async function malToKuronime(malId) {
 
         const q = t.toLowerCase().trim();
 
-        // 1. Exact match nama
-        const exact = results.find(r =>
-            r.name.toLowerCase().trim() === q ||
-            r.name.toLowerCase().trim() === q + ' (tv)'
-        );
-        if (exact) { cache.set(ck, exact.href, 86400); return exact.href; }
+        // Scoring function — makin tinggi makin cocok
+        function scoreMatch(r) {
+            const rName = r.name.toLowerCase().trim();
+            const rUrl  = r.href.toLowerCase();
+            let score = 0;
 
-        // 2. Slug URL match
-        const slug = q.replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-        const slugMatch = results.find(r =>
-            r.href.includes('/' + slug + '/') || r.href.includes('/' + slug + '-')
-        );
-        if (slugMatch) { cache.set(ck, slugMatch.href, 86400); return slugMatch.href; }
+            // Exact match nama → skor tertinggi
+            if (rName === q || rName === q + ' (tv)') return 1000;
 
-        // 3. Semua kata dalam judul harus ada, dan nama tidak terlalu berbeda
-        const words = q.split(/\s+/).filter(w => w.length > 2);
-        const bestMatch = results.find(r => {
-            const rName = r.name.toLowerCase();
-            const allWordsPresent = words.every(w => rName.includes(w));
-            const notTooLong = rName.length <= q.length * 1.5 + 5;
-            return allWordsPresent && notTooLong;
-        });
-        if (bestMatch) { cache.set(ck, bestMatch.href, 86400); return bestMatch.href; }
+            // Nama dimulai dengan judul persis (misal "naruto kecil" starts with "naruto" → boleh)
+            // Tapi hindari "boruto: naruto next generations"
+            // Penalti besar kalau nama hasil LEBIH PANJANG dari query (kemungkinan judul lain)
+            const extraWords = rName.replace(q, '').trim().split(/\s+/).filter(Boolean).length;
+            score -= extraWords * 20;
+
+            // Bonus kalau slug URL = slug query persis
+            const slug = q.replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+            if (rUrl.includes('/' + slug + '/')) score += 200;
+
+            // Bonus kalau nama mengandung semua kata query
+            const words = q.split(/\s+/).filter(w => w.length > 1);
+            const allWords = words.every(w => rName.includes(w));
+            if (allWords) score += 50;
+
+            // Bonus kalau panjang nama mirip dengan query (berarti lebih spesifik)
+            const lenDiff = Math.abs(rName.length - q.length);
+            score -= lenDiff * 2;
+
+            // Penalti keras kalau nama mengandung kata yang TIDAK ada di query
+            // dan kata itu adalah kata kunci (movie, next, generation, shippuden, dll)
+            const extraKeywords = ['movie', 'next generations', 'shippuden', 'boruto', 'special', 'ova'];
+            for (const kw of extraKeywords) {
+                if (rName.includes(kw) && !q.includes(kw)) score -= 300;
+            }
+
+            return score;
+        }
+
+        // Sort by score descending, ambil yang terbaik
+        const scored = results
+            .map(r => ({ ...r, score: scoreMatch(r) }))
+            .sort((a, b) => b.score - a.score);
+
+        console.log('[malToKuronime] Scored results for "' + t + '":', scored.map(r => ({ name: r.name, score: r.score, href: r.href })));
+
+        const best = scored[0];
+        if (best && best.score > -100) {
+            cache.set(ck, best.href, 86400);
+            return best.href;
+        }
     }
     return null;
 }
