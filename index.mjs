@@ -145,16 +145,33 @@ async function malToKuronime(malId) {
     const titleEn = jData?.data?.title_english || '';
     if (!title) return null;
 
-    // Try exact title first, then english title
+    // Try direct URL first
+    for (const t of [titleEn, title]) {
+        if (!t) continue;
+        const slug = t.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+        const directUrl = `${BASE}/anime/${slug}/`;
+        try {
+            const html = await fetchHtml(directUrl);
+            if (html.includes('eplister') || html.includes('episodelist')) {
+                cache.set(ck, directUrl, 86400);
+                return directUrl;
+            }
+        } catch(e) {}
+    }
+
+    // Fallback: search
     for (const t of [titleEn, title]) {
         if (!t) continue;
         const results = await searchKuronime(t);
-        // Find exact/closest match (not sequel)
         const exact = results.find(r => {
             const name = r.name.toLowerCase();
             const q = t.toLowerCase();
-            return name === q || name.startsWith(q + ':') || name.startsWith(q + ' (');
-        }) || results.find(r => !r.name.toLowerCase().includes('next gen') && !r.name.toLowerCase().includes('boruto'));
+            return name === q || name === q + ' (tv)';
+        }) || results.find(r => {
+            const name = r.name.toLowerCase();
+            const q = t.toLowerCase().split(' ')[0];
+            return name.startsWith(q) && !name.includes('next gen') && !name.includes('boruto');
+        });
         if (exact) {
             cache.set(ck, exact.href, 86400);
             return exact.href;
