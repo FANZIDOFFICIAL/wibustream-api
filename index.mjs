@@ -170,10 +170,47 @@ async function getEpisodeUrl(animeUrl, epNum) {
 async function getEmbed(epUrl) {
     const html = await fetchHtml(epUrl);
     const $ = cheerio.load(html);
-    const iframe = $('iframe[src]').first().attr('src') ||
-                   $('.player-embed iframe').attr('src') ||
-                   $('iframe').first().attr('src') || null;
-    return iframe;
+
+    // Domain yang BUKAN video player — harus difilter
+    const blacklist = ['cbox.ws', 'facebook.com', 'disqus.com', 'google.com', 'twitter.com', 'addthis.com'];
+
+    function isVideoIframe(src) {
+        if (!src) return false;
+        return !blacklist.some(b => src.includes(b));
+    }
+
+    // Cari iframe video dari selector spesifik dulu
+    const playerSelectors = [
+        '.player-embed iframe',
+        '#player iframe',
+        '.video-player iframe',
+        '.post-content iframe',
+        '.entry-content iframe',
+        '#playerframe',
+        'iframe[src*="drive.google"]',
+        'iframe[src*="doodstream"]',
+        'iframe[src*="streamlare"]',
+        'iframe[src*="streamtape"]',
+        'iframe[src*="filemoon"]',
+        'iframe[src*="mp4upload"]',
+        'iframe[src*="yourupload"]',
+        'iframe[src*="okru"]',
+        'iframe[src*="ok.ru"]',
+    ];
+
+    for (const sel of playerSelectors) {
+        const src = $(sel).first().attr('src');
+        if (isVideoIframe(src)) return src;
+    }
+
+    // Fallback: cari semua iframe, skip yang blacklist
+    let found = null;
+    $('iframe[src]').each((_, el) => {
+        const src = $(el).attr('src') || '';
+        if (isVideoIframe(src) && !found) found = src;
+    });
+
+    return found;
 }
 
 async function malToKuronime(malId) {
