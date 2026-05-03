@@ -107,7 +107,9 @@ async function malToKuronime(malId) {
     if (cache.has(ck)) return cache.get(ck);
 
     const jikan = await fetch(`https://api.jikan.moe/v4/anime/${malId}`);
-    const jData = await jikan.json();
+    const text = await jikan.text();
+    let jData;
+    try { jData = JSON.parse(text); } catch(e) { throw new Error('Jikan API error: ' + text.substring(0, 100)); }
     const title = jData?.data?.title || '';
     if (!title) return null;
 
@@ -171,7 +173,9 @@ app.get('/debug-ep', async (req, res) => {
     const epNum = parseInt(req.query.ep || '1');
     try {
         const jikan = await fetch(`https://api.jikan.moe/v4/anime/${malId}`);
-        const jData = await jikan.json();
+        const text = await jikan.text();
+        let jData;
+        try { jData = JSON.parse(text); } catch(e) { return res.json({ error: 'Jikan error: ' + text.substring(0, 200) }); }
         const title = jData?.data?.title || '';
         const results = await searchKuronime(title);
         const animeUrl = results[0]?.href || null;
