@@ -97,15 +97,28 @@ async function getEpisodeUrl(animeUrl, epNum) {
     try {
         await page.setViewport({ width: 1280, height: 800 });
         await page.goto(animeUrl, { waitUntil: 'networkidle2', timeout: 30000 });
-        await page.waitForSelector('.eplister', { timeout: 5000 }).catch(() => {});
         const html = await page.content();
         const $ = cheerio.load(html);
-        $('.eplister li').each((_, el) => {
-            const num = parseInt($(el).find('.epl-num').text().trim());
-            if (num === epNum) {
-                epUrl = $(el).find('a').attr('href') || null;
-            }
-        });
+
+        // Try multiple selectors
+        const selectors = ['.eplister li a', '.eplist li a', '.episodelist li a', '#episodelist li a', 'ul.episodelist a', '.epcurrent a'];
+        for (const sel of selectors) {
+            $(sel).each((_, el) => {
+                const href = $(el).attr('href') || '';
+                const text = $(el).text();
+                const numMatch = text.match(/(\d+)/);
+                const num = numMatch ? parseInt(numMatch[1]) : null;
+                if (num === epNum && href) epUrl = href;
+            });
+            if (epUrl) break;
+        }
+
+        // Fallback: find by URL pattern episode-N
+        if (!epUrl) {
+            $('a[href*="episode-' + epNum + '"]').each((_, el) => {
+                epUrl = $(el).attr('href') || null;
+            });
+        }
     } finally {
         await page.close();
     }
@@ -129,13 +142,25 @@ async function malToKuronime(malId) {
 
     const jData = await jikanFetch(malId);
     const title = jData?.data?.title || '';
+    const titleEn = jData?.data?.title_english || '';
     if (!title) return null;
 
-    const results = await searchKuronime(title);
-    if (!results.length) return null;
-
-    cache.set(ck, results[0].href, 86400);
-    return results[0].href;
+    // Try exact title first, then english title
+    for (const t of [titleEn, title]) {
+        if (!t) continue;
+        const results = await searchKuronime(t);
+        // Find exact/closest match (not sequel)
+        const exact = results.find(r => {
+            const name = r.name.toLowerCase();
+            const q = t.toLowerCase();
+            return name === q || name.startsWith(q + ':') || name.startsWith(q + ' (');
+        }) || results.find(r => !r.name.toLowerCase().includes('next gen') && !r.name.toLowerCase().includes('boruto'));
+        if (exact) {
+            cache.set(ck, exact.href, 86400);
+            return exact.href;
+        }
+    }
+    return null;
 }
 
 async function getWatchSources(epId) {
