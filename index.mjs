@@ -166,6 +166,23 @@ app.get('/debug-search', async (req, res) => {
     }
 });
 
+app.get('/debug-ep', async (req, res) => {
+    const malId = req.query.mal || '20';
+    const epNum = parseInt(req.query.ep || '1');
+    try {
+        const jikan = await fetch(`https://api.jikan.moe/v4/anime/${malId}`);
+        const jData = await jikan.json();
+        const title = jData?.data?.title || '';
+        const results = await searchKuronime(title);
+        const animeUrl = results[0]?.href || null;
+        let epUrl = null;
+        if (animeUrl) epUrl = await getEpisodeUrl(animeUrl, epNum);
+        res.json({ title, results: results.slice(0, 3), animeUrl, epUrl });
+    } catch(e) {
+        res.json({ error: e.message });
+    }
+});
+
 app.get('/health', (_, res) => res.json({ ok: true }));
 
 app.get('/watch', async (req, res) => {
