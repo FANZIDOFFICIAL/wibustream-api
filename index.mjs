@@ -134,20 +134,27 @@ async function getEpisodeUrl(animeUrl, epNum) {
             if (epUrl) break;
         }
 
-        // Fallback 1: find by URL pattern nonton-*-episode-N
+        // Fallback 1 & 2: cari link dengan pola episode-N yang EXACT
+        // Pakai regex agar episode-1 tidak match episode-10, episode-100, dll
         if (!epUrl) {
-            $('a[href*="episode-' + epNum + '"]').each((_, el) => {
+            const epPattern = new RegExp('episode-0*' + epNum + '(?:[^0-9]|$)', 'i');
+            $('a').each((_, el) => {
                 const href = $(el).attr('href') || '';
-                if (href && !epUrl) epUrl = href;
+                if (epPattern.test(href) && href.includes('kuronime') && !epUrl) {
+                    epUrl = href;
+                }
             });
         }
 
-        // Fallback 2: cari link yang href-nya punya pola /nonton-...-episode-N/
+        // Fallback 3: cari dari teks link yang mengandung nomor episode exact
         if (!epUrl) {
             $('a').each((_, el) => {
                 const href = $(el).attr('href') || '';
-                const epPattern = new RegExp('episode-0*' + epNum + '(?:[^0-9]|$)', 'i');
-                if (epPattern.test(href) && href.includes('kuronime') && !epUrl) {
+                const text = $(el).text().trim();
+                // Match "Episode 1", "Ep 1", "1" yang berdiri sendiri
+                const numMatch = text.match(/^(?:episode\s*)?(\d+)$/i);
+                const num = numMatch ? parseInt(numMatch[1]) : null;
+                if (num === epNum && href && href.includes('kuronime') && !epUrl) {
                     epUrl = href;
                 }
             });
