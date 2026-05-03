@@ -185,7 +185,12 @@ async function getEmbed(epUrl) {
         const iframeSrcs = [];
         page.on('framenavigated', frame => {
             const url = frame.url();
-            if (url && url !== epUrl && isVideoIframe(url)) {
+            // Filter: harus URL valid (http/https), bukan halaman utama, bukan blacklist
+            if (url &&
+                (url.startsWith('http://') || url.startsWith('https://')) &&
+                url !== epUrl &&
+                !url.includes('kuronime.sbs') &&
+                isVideoIframe(url)) {
                 iframeSrcs.push(url);
             }
         });
