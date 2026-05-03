@@ -1,7 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import NodeCache from 'node-cache';
-import * as cheerio from 'cheerio';
+import puppeteer from 'puppeteer';
 
 const app = express();
 const cache = new NodeCache({ stdTTL: 1800 });
@@ -9,128 +9,127 @@ const PORT = process.env.PORT || 3000;
 
 app.use(cors());
 
-const BASE = 'https://gogoanimes.cv';
-const HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-    'Accept-Language': 'en-US,en;q=0.5',
-    'Accept-Encoding': 'gzip, deflate, br',
-    'Connection': 'keep-alive',
-    'Upgrade-Insecure-Requests': '1',
-    'Sec-Fetch-Dest': 'document',
-    'Sec-Fetch-Mode': 'navigate',
-    'Sec-Fetch-Site': 'none',
-    'Referer': BASE + '/',
-};
-
-async function fetchHtml(url) {
-    const res = await fetch(url, { headers: HEADERS });
-    return res.text();
-}
-
-async function jikanGet(path) {
-    const res = await fetch(`https://api.jikan.moe/v4${path}`);
-    return res.json();
-}
-
-async function gogoSearch(title) {
-    const ck = 'gogo:' + title;
-    if (cache.has(ck)) return cache.get(ck);
-    const html = await fetchHtml(`${BASE}/search.html?keyword=${encodeURIComponent(title)}`);
-    const $ = cheerio.load(html);
-    const results = [];
-    $('.items li').each((_, el) => {
-        const a = $(el).find('.name a');
-        const id = a.attr('href')?.replace('/category/', '').trim();
-        const name = a.text().trim();
-        if (id) results.push({ id, name });
-    });
-    // fallback selector
-    if (!results.length) {
-        $('ul.items li, .anime_list_body li').each((_, el) => {
-            const a = $(el).find('a');
-            const href = a.attr('href') || '';
-            const id = href.replace('/category/', '').replace('/', '').trim();
-            const name = a.text().trim();
-            if (id && href.includes('/category/')) results.push({ id, name });
+let browser = null;
+async function getBrowser() {
+    if (!browser || !browser.connected) {
+        browser = await puppeteer.launch({
+            headless: 'new',
+            args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-gpu',
+                '--no-first-run',
+                '--no-zygote',
+                '--single-process',
+            ]
         });
     }
-    if (results.length) cache.set(ck, results, 86400);
-    return results;
+    return browser;
 }
 
-async function gogoEpisodes(animeId) {
-    const ck = 'eplist:' + animeId;
+async function fetchPage(url) {
+    const b = await getBrowser();
+    const page = await b.newPage();
+    try {
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36');
+        await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+        await page.waitForSelector('body', { timeout: 10000 });
+        return await page.content();
+    } finally {
+        await page.close();
+    }
+}
+
+async function fetchJson(url) {
+    const b = await getBrowser();
+    const page = await b.newPage();
+    try {
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36');
+        const res = await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+        const text = await res.text();
+        return JSON.parse(text);
+    } finally {
+        await page.close();
+    }
+}
+
+const BASE = 'https://hianime.to';
+
+async function malToHianimeId(malId) {
+    const ck = 'hianime:' + malId;
     if (cache.has(ck)) return cache.get(ck);
-    const html = await fetchHtml(`${BASE}/category/${animeId}`);
-    const $ = cheerio.load(html);
 
-    const movieId = $('#movie_id').val() || $('[name="movie_id"]').val() || '';
-    const epStart = $('#episode_page a').first().attr('ep_start') || '0';
-    const epEnd = $('#episode_page a').last().attr('ep_end') || '0';
+    // Jikan → judul
+    const jikan = await fetch(`https://api.jikan.moe/v4/anime/${malId}`);
+    const jData = await jikan.json();
+    const title = jData?.data?.title_english || jData?.data?.title || '';
+    if (!title) return null;
 
-    if (!movieId) return { error: 'movieId not found', html: html.substring(0, 800) };
+    // Search HiAnime
+    const html = await fetchPage(`${BASE}/search?keyword=${encodeURIComponent(title)}`);
+    const match = html.match(/href="\/([a-z0-9-]+-\d+)"/);
+    if (!match) return null;
 
-    const ajaxUrl = `https://ajax.gogocdn.net/ajax/load-list-episode?ep_start=${epStart}&ep_end=${epEnd}&id=${movieId}`;
-    const listRes = await fetch(ajaxUrl, { headers: HEADERS });
-    const listHtml = await listRes.text();
-    const $2 = cheerio.load(listHtml);
+    cache.set(ck, match[1], 86400);
+    return match[1];
+}
+
+async function getEpisodes(animeId) {
+    const ck = 'eps:' + animeId;
+    if (cache.has(ck)) return cache.get(ck);
+
+    const html = await fetchPage(`${BASE}/${animeId}`);
+    const idMatch = animeId.match(/(\d+)$/);
+    const numericId = idMatch?.[1];
+    if (!numericId) return [];
+
+    const data = await fetchJson(`${BASE}/ajax/v2/episode/list/${numericId}`);
+    const epHtml = data?.html || '';
     const eps = [];
-    $2('#episode_related li').each((_, el) => {
-        const href = $2(el).find('a').attr('href')?.trim();
-        const num = parseFloat($2(el).find('.name').text().replace(/EP\s*/i, '').trim());
-        if (href && !isNaN(num)) eps.push({ id: href.replace('/', ''), number: num });
-    });
-    eps.sort((a, b) => a.number - b.number);
+    const regex = /data-id="(\d+)"[^>]*data-number="(\d+)"/g;
+    let m;
+    while ((m = regex.exec(epHtml)) !== null) {
+        eps.push({ id: m[1], number: parseInt(m[2]) });
+    }
+
     if (eps.length) cache.set(ck, eps, 3600);
     return eps;
 }
 
-async function gogoStream(epId) {
-    const html = await fetchHtml(`${BASE}/${epId}`);
-    const $ = cheerio.load(html);
-    const embedUrl = $('.play-video iframe').attr('src') || $('iframe[src*="gogoanime"], iframe[src*="gogocdn"], iframe[src*="rapid"]').attr('src') || $('iframe').first().attr('src') || '';
-    return embedUrl || null;
-}
+async function getStreamUrl(epId) {
+    const data = await fetchJson(`${BASE}/ajax/v2/episode/servers?episodeId=${epId}`);
+    const serverHtml = data?.html || '';
+    const serverMatch = serverHtml.match(/data-id="(\d+)"/);
+    if (!serverMatch) return null;
 
-async function malToGogoSlug(malId) {
-    const ck = 'slug:' + malId;
-    if (cache.has(ck)) return cache.get(ck);
-    const data = await jikanGet(`/anime/${malId}`);
-    const title = data?.data?.title_english || data?.data?.title || '';
-    if (!title) return null;
-    const results = await gogoSearch(title);
-    if (!results.length) return null;
-    const slug = results.find(r => !r.id.includes('-dub'))?.id || results[0].id;
-    cache.set(ck, slug, 86400);
-    return slug;
+    const srcData = await fetchJson(`${BASE}/ajax/v2/episode/sources?id=${serverMatch[1]}`);
+    return srcData?.link || null;
 }
 
 async function getWatchSources(epId) {
     const [realId] = (epId + '|jikan').split('|');
     const m = realId.match(/mal-(\d+)-(\d+)/);
     const malId = m?.[1] ?? '';
-    const epNum = parseFloat(m?.[2] ?? '1');
+    const epNum = parseInt(m?.[2] ?? '1');
     if (!malId) return { sources: [], error: 'ID tidak valid' };
 
     const ck = 'watch:' + malId + ':' + epNum;
     if (cache.has(ck)) return cache.get(ck);
 
     try {
-        const slug = await malToGogoSlug(malId);
-        if (!slug) throw new Error('Anime tidak ditemukan');
+        const animeId = await malToHianimeId(malId);
+        if (!animeId) throw new Error('Anime tidak ditemukan di HiAnime');
 
-        const episodes = await gogoEpisodes(slug);
-        if (episodes?.error) throw new Error('gogoEpisodes: ' + episodes.error);
+        const episodes = await getEpisodes(animeId);
+        const ep = episodes.find(e => e.number === epNum);
+        if (!ep) throw new Error(`Episode ${epNum} tidak ditemukan`);
 
-        const ep = episodes.find(e => e.number === epNum) || episodes[epNum - 1];
-        if (!ep) throw new Error(`Episode ${epNum} tidak ditemukan dari ${episodes.length} ep`);
+        const streamUrl = await getStreamUrl(ep.id);
+        if (!streamUrl) throw new Error('Stream URL tidak ditemukan');
 
-        const embedUrl = await gogoStream(ep.id);
-        if (!embedUrl) throw new Error('Stream tidak ditemukan');
-
-        const result = { sources: [{ url: embedUrl, label: 'GogoAnime', isM3U8: false }] };
-        cache.set(ck, result);
+        const result = { sources: [{ url: streamUrl, label: 'HiAnime', isM3U8: true }] };
+        cache.set(ck, result, 1800);
         return result;
     } catch(e) {
         return { sources: [], error: e.message };
@@ -145,35 +144,6 @@ app.get('/watch', async (req, res) => {
     res.json(await getWatchSources(id));
 });
 
-app.get('/debug', async (req, res) => {
-    const slug = req.query.slug || 'naruto';
-    try {
-        const html = await fetchHtml(`${BASE}/category/${slug}`);
-        const $ = cheerio.load(html);
-        const movieId = $('#movie_id').val() || $('[name="movie_id"]').val() || 'NOT FOUND';
-        const epPages = [];
-        $('#episode_page a').each((_, el) => epPages.push({ s: $(el).attr('ep_start'), e: $(el).attr('ep_end') }));
-        const allInputs = [];
-        $('input').each((_, el) => allInputs.push({ name: $(el).attr('name'), id: $(el).attr('id'), val: $(el).val() }));
-        res.json({ movieId, epPages, allInputs, snippet: html.substring(0, 1000) });
-    } catch(e) {
-        res.json({ error: e.message });
-    }
-});
-
-app.get('/debug-search', async (req, res) => {
-    const q = req.query.q || 'naruto';
-    try {
-        const html = await fetchHtml(`${BASE}/search.html?keyword=${encodeURIComponent(q)}`);
-        const $ = cheerio.load(html);
-        const results = [];
-        $('a[href*="/category/"]').each((_, el) => {
-            results.push({ href: $(el).attr('href'), text: $(el).text().trim() });
-        });
-        res.json({ results: results.slice(0, 10), snippet: html.substring(0, 500) });
-    } catch(e) {
-        res.json({ error: e.message });
-    }
-});
-
+// Init browser on startup
+getBrowser().then(() => console.log('Browser ready'));
 app.listen(PORT, () => console.log(`WibuStream API on port ${PORT}`));
