@@ -128,3 +128,21 @@ app.get('/watch', async (req, res) => {
 });
 
 app.listen(PORT, () => console.log(`WibuStream API on port ${PORT}`));
+
+// DEBUG endpoint - hapus setelah fix
+app.get('/debug', async (req, res) => {
+    const slug = req.query.slug || 'naruto';
+    try {
+        const r = await fetch(`https://gogoanimes.cv/category/${slug}`, {
+            headers: { ...HEADERS, Referer: 'https://gogoanimes.cv/' }
+        });
+        const html = await r.text();
+        const $ = cheerio.load(html);
+        const movieId = $('#movie_id').attr('value') || $('input#movie_id').val() || 'NOT FOUND';
+        const epPages = [];
+        $('#episode_page a').each((_, el) => epPages.push({ ep_start: $(el).attr('ep_start'), ep_end: $(el).attr('ep_end') }));
+        res.json({ movieId, epPages, htmlSnippet: html.substring(0, 500) });
+    } catch(e) {
+        res.json({ error: e.message });
+    }
+});
