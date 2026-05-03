@@ -62,23 +62,39 @@ async function searchKuronime(title) {
     const ck = 'search:' + title;
     if (cache.has(ck)) return cache.get(ck);
 
-    const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-');
     const b = await getBrowser();
     const page = await b.newPage();
     const results = [];
     try {
         await page.setViewport({ width: 1280, height: 800 });
-        await page.goto(`${BASE}/search/${encodeURIComponent(slug)}/`, { waitUntil: 'networkidle2', timeout: 30000 });
+        // Kuronime pakai /?s= bukan /search/
+        const searchUrl = `${BASE}/?s=${encodeURIComponent(title)}`;
+        await page.goto(searchUrl, { waitUntil: 'networkidle2', timeout: 30000 });
         await page.waitForSelector('.bsx', { timeout: 5000 }).catch(() => {});
         const html = await page.content();
         const $ = cheerio.load(html);
-        $('.bsx a').each((_, el) => {
-            const href = $(el).attr('href') || '';
-            const name = $(el).attr('title') || $(el).text().trim();
-            if (href.includes('kuronime.sbs') && !href.includes('/genres/') && !href.includes('/season/')) {
-                results.push({ href, name });
-            }
-        });
+
+        // Coba berbagai selector hasil search kuronime
+        const seen = new Set();
+        const trySelectors = ['.bsx a', '.bs a', '.animes a', 'article a', '.searchlist a'];
+        for (const sel of trySelectors) {
+            $(sel).each((_, el) => {
+                const href = $(el).attr('href') || '';
+                const name = $(el).attr('title') || $(el).text().trim();
+                if (
+                    href.includes('kuronime.sbs/anime/') &&
+                    !href.includes('/genres/') &&
+                    !href.includes('/season/') &&
+                    !href.includes('/episode') &&
+                    name &&
+                    !seen.has(href)
+                ) {
+                    seen.add(href);
+                    results.push({ href, name });
+                }
+            });
+            if (results.length > 0) break;
+        }
     } finally {
         await page.close();
     }
@@ -101,22 +117,39 @@ async function getEpisodeUrl(animeUrl, epNum) {
         const $ = cheerio.load(html);
 
         // Try multiple selectors
-        const selectors = ['.eplister li a', '.eplist li a', '.episodelist li a', '#episodelist li a', 'ul.episodelist a', '.epcurrent a'];
+        const selectors = [
+            '.eplister li a', '.eplist li a', '.episodelist li a',
+            '#episodelist li a', 'ul.episodelist a', '.epcurrent a',
+            '.eps li a', '.ep-item a', '#episode_list li a',
+            '.episodes li a', '.daftar-episode li a', 'ul.episodes a'
+        ];
         for (const sel of selectors) {
             $(sel).each((_, el) => {
                 const href = $(el).attr('href') || '';
-                const text = $(el).text();
+                const text = $(el).text().trim();
                 const numMatch = text.match(/(\d+)/);
                 const num = numMatch ? parseInt(numMatch[1]) : null;
-                if (num === epNum && href) epUrl = href;
+                if (num === epNum && href && !epUrl) epUrl = href;
             });
             if (epUrl) break;
         }
 
-        // Fallback: find by URL pattern episode-N
+        // Fallback 1: find by URL pattern nonton-*-episode-N
         if (!epUrl) {
             $('a[href*="episode-' + epNum + '"]').each((_, el) => {
-                epUrl = $(el).attr('href') || null;
+                const href = $(el).attr('href') || '';
+                if (href && !epUrl) epUrl = href;
+            });
+        }
+
+        // Fallback 2: cari link yang href-nya punya pola /nonton-...-episode-N/
+        if (!epUrl) {
+            $('a').each((_, el) => {
+                const href = $(el).attr('href') || '';
+                const epPattern = new RegExp('episode-0*' + epNum + '(?:[^0-9]|$)', 'i');
+                if (epPattern.test(href) && href.includes('kuronime') && !epUrl) {
+                    epUrl = href;
+                }
             });
         }
     } finally {
@@ -164,19 +197,33 @@ async function malToKuronime(malId) {
     for (const t of [titleEn, title]) {
         if (!t) continue;
         const results = await searchKuronime(t);
-        const exact = results.find(r => {
-            const name = r.name.toLowerCase();
-            const q = t.toLowerCase();
-            return name === q || name === q + ' (tv)';
-        }) || results.find(r => {
-            const name = r.name.toLowerCase();
-            const q = t.toLowerCase().split(' ')[0];
-            return name.startsWith(q) && !name.includes('next gen') && !name.includes('boruto');
+        if (!results.length) continue;
+
+        const q = t.toLowerCase().trim();
+
+        // 1. Exact match nama
+        const exact = results.find(r =>
+            r.name.toLowerCase().trim() === q ||
+            r.name.toLowerCase().trim() === q + ' (tv)'
+        );
+        if (exact) { cache.set(ck, exact.href, 86400); return exact.href; }
+
+        // 2. Slug URL match
+        const slug = q.replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+        const slugMatch = results.find(r =>
+            r.href.includes('/' + slug + '/') || r.href.includes('/' + slug + '-')
+        );
+        if (slugMatch) { cache.set(ck, slugMatch.href, 86400); return slugMatch.href; }
+
+        // 3. Semua kata dalam judul harus ada, dan nama tidak terlalu berbeda
+        const words = q.split(/\s+/).filter(w => w.length > 2);
+        const bestMatch = results.find(r => {
+            const rName = r.name.toLowerCase();
+            const allWordsPresent = words.every(w => rName.includes(w));
+            const notTooLong = rName.length <= q.length * 1.5 + 5;
+            return allWordsPresent && notTooLong;
         });
-        if (exact) {
-            cache.set(ck, exact.href, 86400);
-            return exact.href;
-        }
+        if (bestMatch) { cache.set(ck, bestMatch.href, 86400); return bestMatch.href; }
     }
     return null;
 }
@@ -212,18 +259,24 @@ async function getWatchSources(epId) {
 app.get('/debug-search', async (req, res) => {
     const q = req.query.q || 'naruto';
     try {
+        // Pakai searchKuronime yang sudah diperbaiki
+        const results = await searchKuronime(q);
+
+        // Juga test raw HTML untuk debug selector
         const html = await fetchHtml(`${BASE}/?s=${encodeURIComponent(q)}`);
         const $ = cheerio.load(html);
-        const links = [];
-        $('a[href*="kuronime"]').each((_, el) => {
-            links.push({ href: $(el).attr('href'), text: $(el).text().trim().substring(0, 50) });
-        });
-        // Find anime result containers
         const containers = [];
-        $('article, .bs, .bsx, .searchlist, .result').each((_, el) => {
+        $('article, .bs, .bsx, .searchlist, .result, .animes').each((_, el) => {
             containers.push($(el).attr('class') || $(el).prop('tagName'));
         });
-        res.json({ total: links.length, links: links.slice(0, 10), containers: [...new Set(containers)].slice(0, 20), snippet: html.substring(3000, 4500) });
+
+        res.json({
+            query: q,
+            results,
+            total: results.length,
+            containers: [...new Set(containers)].slice(0, 20),
+            searchUrl: `${BASE}/?s=${encodeURIComponent(q)}`
+        });
     } catch(e) {
         res.json({ error: e.message });
     }
@@ -235,13 +288,31 @@ app.get('/debug-ep', async (req, res) => {
     try {
         const jData = await jikanFetch(malId);
         const title = jData?.data?.title || '';
+        const titleEn = jData?.data?.title_english || '';
+
+        // Search dengan title asli dan English
         const results = await searchKuronime(title);
-        const animeUrl = results[0]?.href || null;
+        const resultsEn = titleEn ? await searchKuronime(titleEn) : [];
+        const allResults = [...results, ...resultsEn].filter((r, i, arr) =>
+            arr.findIndex(x => x.href === r.href) === i
+        );
+
+        // Pakai malToKuronime untuk matching yang lebih cerdas
+        const animeUrl = await malToKuronime(malId);
         let epUrl = null;
         if (animeUrl) epUrl = await getEpisodeUrl(animeUrl, epNum);
-        res.json({ title, results: results.slice(0, 3), animeUrl, epUrl });
+
+        res.json({
+            mal_id: malId,
+            title,
+            titleEn,
+            searchResults: allResults.slice(0, 5),
+            matchedAnimeUrl: animeUrl,
+            epUrl,
+            status: animeUrl ? 'found' : 'not_found'
+        });
     } catch(e) {
-        res.json({ error: e.message });
+        res.json({ error: e.message, stack: e.stack });
     }
 });
 
