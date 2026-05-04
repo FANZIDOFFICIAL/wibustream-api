@@ -419,5 +419,239 @@ app.get('/debug', async (req, res) => {
     }
 });
 
+
+// ═══════════════════════════════════════════════════════════════
+// DRAMACOOL SCRAPER
+// ═══════════════════════════════════════════════════════════════
+const DRAMA_BASE = 'https://dramacool.com.pa';
+
+async function dramaFetchHtml(url) {
+    const b = await getBrowser();
+    const page = await b.newPage();
+    try {
+        await page.setExtraHTTPHeaders({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Referer': DRAMA_BASE,
+        });
+        await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+        return await page.content();
+    } finally {
+        await page.close();
+    }
+}
+
+// Search drama
+async function searchDrama(query) {
+    const ck = 'drama-search:' + query;
+    if (cache.has(ck)) return cache.get(ck);
+
+    const html = await dramaFetchHtml(`${DRAMA_BASE}/search?keyword=${encodeURIComponent(query)}`);
+    const $ = cheerio.load(html);
+    const results = [];
+
+    $('.list-episode-item li a, .block-tab .list li a, ul.list-episode-item a').each((_, el) => {
+        const href  = $(el).attr('href') || '';
+        const title = $(el).find('h3').text().trim() || $(el).attr('title') || '';
+        const img   = $(el).find('img').attr('data-original') || $(el).find('img').attr('src') || '';
+        const year  = $(el).find('.type span').last().text().trim() || '';
+        if (href && title && !href.includes('/episode/')) {
+            results.push({
+                id: href.replace(/^\//, '').replace(/\/$/, ''),
+                title,
+                image: img,
+                year,
+                url: href.startsWith('http') ? href : DRAMA_BASE + href,
+            });
+        }
+    });
+
+    if (results.length) cache.set(ck, results, 3600);
+    return results;
+}
+
+// Get drama info + episode list
+async function getDramaInfo(dramaId) {
+    const ck = 'drama-info:' + dramaId;
+    if (cache.has(ck)) return cache.get(ck);
+
+    const url  = dramaId.startsWith('http') ? dramaId : `${DRAMA_BASE}/${dramaId}`;
+    const html = await dramaFetchHtml(url);
+    const $    = cheerio.load(html);
+
+    const title    = $('h1.film-name, .info h1, h1').first().text().trim();
+    const image    = $('.film-poster img, .detail-img img').attr('src') || '';
+    const synopsis = $('.film-description .text, .info .desc').text().trim();
+    const status   = $('.status span').last().text().trim() || '';
+    const country  = $('.country span a').text().trim() || '';
+    const genre    = $('.genre span a').map((_, el) => $(el).text().trim()).get();
+
+    const episodes = [];
+    $('ul.list-episode-item li a, .episodes-content li a, .all-episode li a').each((_, el) => {
+        const href  = $(el).attr('href') || '';
+        const label = $(el).text().trim() || $(el).attr('title') || '';
+        if (href && label) {
+            episodes.push({
+                id: href.replace(/^\//, '').replace(/\/$/, ''),
+                label: label.replace(title, '').trim() || label,
+                url: href.startsWith('http') ? href : DRAMA_BASE + href,
+            });
+        }
+    });
+
+    // Reverse agar episode 1 di atas
+    episodes.reverse();
+
+    const result = { title, image, synopsis, status, country, genre, episodes, totalEpisodes: episodes.length };
+    if (title) cache.set(ck, result, 3600);
+    return result;
+}
+
+// Get stream URL dari episode page
+async function getDramaStream(episodeId) {
+    const ck = 'drama-stream:' + episodeId;
+    if (cache.has(ck)) return cache.get(ck);
+
+    const url = episodeId.startsWith('http') ? episodeId : `${DRAMA_BASE}/${episodeId}`;
+
+    const blacklist = ['facebook.com', 'disqus.com', 'google.com', 'twitter.com',
+                       'addthis.com', 'mc.yandex', 'googletagmanager', 'dramacool'];
+
+    const b    = await getBrowser();
+    const page = await b.newPage();
+    const sources = [];
+
+    try {
+        await page.setExtraHTTPHeaders({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36',
+            'Referer': DRAMA_BASE,
+        });
+
+        const iframeSrcs = [];
+        page.on('framenavigated', frame => {
+            const furl = frame.url();
+            if (furl && furl.startsWith('http') && !furl.includes('dramacool') &&
+                !blacklist.some(b => furl.includes(b))) {
+                iframeSrcs.push(furl);
+            }
+        });
+
+        await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+        await page.waitForSelector('iframe', { timeout: 8000 }).catch(() => {});
+
+        // Coba klik server button jika ada
+        const serverBtns = await page.$$('.server-item a, .list-server-items .linkserver, .server a');
+        for (const btn of serverBtns.slice(0, 3)) {
+            try {
+                const label = await page.evaluate(el => el.textContent.trim(), btn);
+                await btn.click();
+                await page.waitForTimeout(2000);
+
+                const found = await page.evaluate((bl) => {
+                    const iframes = Array.from(document.querySelectorAll('iframe[src]'));
+                    for (const f of iframes) {
+                        const src = f.src || '';
+                        if (src && !bl.some(b => src.includes(b))) return src;
+                    }
+                    return null;
+                }, blacklist);
+
+                if (found) sources.push({ url: found, label, isM3U8: false });
+            } catch(e) {}
+        }
+
+        // Fallback dari iframe langsung
+        if (!sources.length) {
+            const found = await page.evaluate((bl) => {
+                const iframes = Array.from(document.querySelectorAll('iframe[src]'));
+                for (const f of iframes) {
+                    const src = f.src || '';
+                    if (src && !bl.some(b => src.includes(b))) return src;
+                }
+                return null;
+            }, blacklist);
+            if (found) sources.push({ url: found, label: 'Server 1', isM3U8: false });
+        }
+
+        // Dari framenavigated
+        if (!sources.length && iframeSrcs.length) {
+            sources.push({ url: iframeSrcs[0], label: 'Server 1', isM3U8: false });
+        }
+
+    } finally {
+        await page.close();
+    }
+
+    if (sources.length) cache.set(ck, sources, 1800);
+    return sources;
+}
+
+// ── Drama Endpoints ────────────────────────────────────────────────────
+
+// GET /drama/search?q=goblin
+app.get('/drama/search', async (req, res) => {
+    const q = req.query.q || '';
+    if (!q) return res.json({ error: 'q required' });
+    try {
+        const results = await searchDrama(q);
+        res.json({ results });
+    } catch(e) {
+        res.json({ error: e.message });
+    }
+});
+
+// GET /drama/info?id=goblin-2016
+app.get('/drama/info', async (req, res) => {
+    const id = req.query.id || '';
+    if (!id) return res.json({ error: 'id required' });
+    try {
+        const info = await getDramaInfo(id);
+        res.json(info);
+    } catch(e) {
+        res.json({ error: e.message });
+    }
+});
+
+// GET /drama/watch?id=goblin-2016/episode-1
+app.get('/drama/watch', async (req, res) => {
+    const id = req.query.id || '';
+    if (!id) return res.json({ error: 'id required' });
+    try {
+        const sources = await getDramaStream(id);
+        if (!sources.length) return res.json({ sources: [], error: 'Stream tidak ditemukan' });
+        res.json({ sources });
+    } catch(e) {
+        res.json({ error: e.message });
+    }
+});
+
+// GET /drama/trending
+app.get('/drama/trending', async (req, res) => {
+    const ck = 'drama-trending';
+    if (cache.has(ck)) return res.json(cache.get(ck));
+    try {
+        const html = await dramaFetchHtml(`${DRAMA_BASE}/most-popular-drama`);
+        const $    = cheerio.load(html);
+        const results = [];
+        $('.list-episode-item li a').each((_, el) => {
+            const href  = $(el).attr('href') || '';
+            const title = $(el).find('h3').text().trim() || $(el).attr('title') || '';
+            const img   = $(el).find('img').attr('data-original') || $(el).find('img').attr('src') || '';
+            if (href && title) {
+                results.push({
+                    id: href.replace(/^\//, '').replace(/\/$/, ''),
+                    title, image: img,
+                    url: href.startsWith('http') ? href : DRAMA_BASE + href,
+                });
+            }
+        });
+        const out = { results: results.slice(0, 24) };
+        if (results.length) cache.set(ck, out, 3600);
+        res.json(out);
+    } catch(e) {
+        res.json({ error: e.message });
+    }
+});
+
 getBrowser().then(() => console.log('Browser ready'));
 app.listen(PORT, () => console.log(`WibuStream API on port ${PORT}`));
